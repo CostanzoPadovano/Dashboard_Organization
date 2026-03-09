@@ -88,6 +88,10 @@ const Storage = (() => {
     }
 
     function load() {
+        if (!memoryData || !memoryData.cards) {
+             console.warn("Storage.load() chiamato prima che i dati di Firebase fossero pronti. Uso fallback.");
+             return JSON.parse(JSON.stringify(DEFAULT_DATA));
+        }
         return memoryData; // Ritorna sempre i dati freschi tenuti in memoria dall'onSnapshot
     }
 
