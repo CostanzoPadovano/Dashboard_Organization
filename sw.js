@@ -3,7 +3,7 @@
 // Cache-First strategy per funzionamento offline
 // ============================================================
 
-const CACHE_NAME = 'biotracker-v2';
+const CACHE_NAME = 'biotracker-v3';
 const ASSETS = [
     './',
     './index.html',
@@ -43,6 +43,14 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
     // Skip non-GET requests
     if (event.request.method !== 'GET') return;
+
+    // IMPORTANT: Bypass Service Worker for Firebase/Firestore API requests
+    // altrimenti la cache rompe la sincronizzazione real-time e dà errore silenzioso
+    if (event.request.url.includes('firebase') ||
+        event.request.url.includes('firestore') ||
+        event.request.url.includes('googleapis')) {
+        return;
+    }
 
     // Skip Google Fonts (they have their own caching)
     if (event.request.url.includes('fonts.googleapis.com') ||
