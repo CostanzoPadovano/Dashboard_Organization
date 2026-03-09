@@ -3,11 +3,12 @@
 // Cache-First strategy per funzionamento offline
 // ============================================================
 
-const CACHE_NAME = 'biotracker-v1';
+const CACHE_NAME = 'biotracker-v2';
 const ASSETS = [
     './',
     './index.html',
     './css/style.css',
+    './js/firebase-init.js',
     './js/storage.js',
     './js/board.js',
     './js/card.js',
