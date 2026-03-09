@@ -4,7 +4,7 @@
 // ============================================================
 
 const firebaseConfig = {
-    apiKey: "AIzaSyAgXwld5mD-",
+    apiKey: "AIzaSyAgXwld5mD-B5uudVho10W8jvM4dl_eFaY",
     authDomain: "biotracker-app-7bc00.firebaseapp.com",
     projectId: "biotracker-app-7bc00",
     storageBucket: "biotracker-app-7bc00.firebasestorage.app",
