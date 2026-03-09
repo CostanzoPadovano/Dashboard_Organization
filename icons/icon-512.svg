@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#0d1117"/>
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#3fb950"/>
+    </linearGradient>
+  </defs>
+  <!-- DNA Helix -->
+  <path d="M180 100 C180 155 332 180 332 240 C332 300 180 320 180 375 M332 100 C332 155 180 180 180 240 C180 300 332 320 332 375" 
+        stroke="url(#g1)" stroke-width="14" fill="none" stroke-linecap="round"/>
+  <!-- Rungs -->
+  <line x1="195" y1="145" x2="317" y2="145" stroke="#58a6ff" stroke-width="7" opacity="0.6"/>
+  <line x1="183" y1="195" x2="329" y2="195" stroke="#3fb950" stroke-width="7" opacity="0.6"/>
+  <line x1="183" y1="240" x2="329" y2="240" stroke="#58a6ff" stroke-width="7" opacity="0.6"/>
+  <line x1="183" y1="288" x2="329" y2="288" stroke="#3fb950" stroke-width="7" opacity="0.6"/>
+  <line x1="195" y1="338" x2="317" y2="338" stroke="#58a6ff" stroke-width="7" opacity="0.6"/>
+  <!-- Kanban dots -->
+  <circle cx="160" cy="430" r="14" fill="#f85149" opacity="0.8"/>
+  <circle cx="216" cy="430" r="14" fill="#d29922" opacity="0.8"/>
+  <circle cx="272" cy="430" r="14" fill="#58a6ff" opacity="0.8"/>
+  <circle cx="328" cy="430" r="14" fill="#3fb950" opacity="0.8"/>
+</svg>
