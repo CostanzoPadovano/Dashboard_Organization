@@ -4,12 +4,47 @@
 // ============================================================
 
 const App = (() => {
+    let appStarted = false;
+
     async function init() {
+        console.log('⏳ Verifica Autenticazione in corso...');
+        
+        const loginOverlay = document.getElementById('login-overlay');
+        const btnLogin = document.getElementById('btn-login-google');
+
+        if (btnLogin) {
+            btnLogin.addEventListener('click', () => {
+                const provider = new firebase.auth.GoogleAuthProvider();
+                firebase.auth().signInWithPopup(provider).catch(err => {
+                    console.error("Errore login:", err);
+                    showToast("Errore durante il login: " + err.message, 'error');
+                });
+            });
+        }
+
+        // Ascolto stato utente da Firebase Auth
+        firebase.auth().onAuthStateChanged(async (user) => {
+            if (user) {
+                console.log('👤 Utente loggato:', user.email);
+                if (loginOverlay) loginOverlay.style.display = 'none';
+                await startApp();
+            } else {
+                console.log('🔒 Utente non loggato. Mostro schermata di login.');
+                if (loginOverlay) loginOverlay.style.display = 'flex';
+                // Volendo potremmo nascondere la board o fare un reload, 
+                // ma in questo caso l'overlay a schermo intero blocca l'UI dietro di esso.
+            }
+        });
+    }
+
+    async function startApp() {
+        if (appStarted) return; // Evita loop o doppie inizializzazioni ai refresh
+        appStarted = true;
+
         try {
-            // Mostriamo un log o prepariamo la UI...
             console.log('⏳ Connessione al database in corso...');
             
-            // Aspettiamo che Firebase scarichi la lavagna (o carichi dal DB locale le prime volte)
+            // Aspettiamo che Firebase scarichi la lavagna personale dell'utente
             await Storage.initCloud();
         } catch(e) {
             console.error("Errore di connessione a Firebase:", e);

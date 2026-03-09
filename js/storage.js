@@ -48,8 +48,15 @@ const Storage = (() => {
     function initCloud() {
         return new Promise((resolve, reject) => {
             try {
-                // Riferimento al documento "default" della collezione "boards"
-                const docRef = db.collection('boards').doc('default');
+                const user = firebase.auth().currentUser;
+                if (!user) {
+                    console.error("Blocco Storage init() perché non risulta alcun utente autenticato.");
+                    reject(new Error("Nessun utente loggato"));
+                    return;
+                }
+                
+                // Riferimento al documento personale della collezione "boards" (PRIVATO per questo user)
+                const docRef = db.collection('boards').doc(user.uid);
                 
                 // Listener real-time: scatta al primo caricamento e ad ogni modifica nel cloud
                 docRef.onSnapshot((doc) => {
@@ -98,10 +105,12 @@ const Storage = (() => {
     function save(data) {
         try {
             memoryData = data;
-            // Scrive su Firestore. L'onSnapshot locale ignorerà i rimbalzi se i dati sono uguali
-            if (db) {
-                db.collection('boards').doc('default').set(data)
-                  .catch(e => console.error("Errore scrittura Firebase:", e));
+            const user = firebase.auth().currentUser;
+
+            // Scrive su Firestore solo se siamo loggati
+            if (db && user) {
+                db.collection('boards').doc(user.uid).set(data)
+                  .catch(e => console.error("Errore scrittura Firebase Auth:", e));
             }
             return true;
         } catch (e) {
