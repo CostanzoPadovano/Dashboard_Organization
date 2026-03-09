@@ -3,7 +3,7 @@
 // Cache-First strategy per funzionamento offline
 // ============================================================
 
-const CACHE_NAME = 'biotracker-v3';
+const CACHE_NAME = 'biotracker-v4';
 const ASSETS = [
     './',
     './index.html',
