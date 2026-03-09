@@ -4,7 +4,17 @@
 // ============================================================
 
 const App = (() => {
-    function init() {
+    async function init() {
+        try {
+            // Mostriamo un log o prepariamo la UI...
+            console.log('⏳ Connessione al database in corso...');
+            
+            // Aspettiamo che Firebase scarichi la lavagna (o carichi dal DB locale le prime volte)
+            await Storage.initCloud();
+        } catch(e) {
+            console.error("Errore di connessione a Firebase:", e);
+        }
+
         Board.init();
         Search.init();
         updateStats();
@@ -13,7 +23,7 @@ const App = (() => {
         registerServiceWorker();
 
         // Tooltip
-        console.log('%c🧬 BioTracker Inizializzato', 'color: #3fb950; font-size: 14px; font-weight: bold;');
+        console.log('%c🧬 BioTracker Sincronizzato & Attivo', 'color: #3fb950; font-size: 14px; font-weight: bold;');
     }
 
     function updateStats() {

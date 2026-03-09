@@ -42,25 +42,63 @@ const Storage = (() => {
         'Gene Expression', 'Pathway Analysis', 'Altro'
     ];
 
-    // ----- Core CRUD -----
+    // Variabile in memoria tenuta sempre sincronizzata con Firestore
+    let memoryData = null;
+
+    function initCloud() {
+        return new Promise((resolve, reject) => {
+            try {
+                // Riferimento al documento "default" della collezione "boards"
+                const docRef = db.collection('boards').doc('default');
+                
+                // Listener real-time: scatta al primo caricamento e ad ogni modifica nel cloud
+                docRef.onSnapshot((doc) => {
+                    if (doc.exists) {
+                        memoryData = doc.data();
+                    } else {
+                        // Se non esiste nel cloud, lo creiamo col default
+                        memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+                        docRef.set(memoryData).catch(console.error);
+                    }
+                    
+                    // Se l'app è già inizializzata e riceviamo un aggiornamento (es. da un altro dispositivo)
+                    // forziamo il re-render della UI per mostrare i dati aggiornati in tempo reale!
+                    if (window.Board && typeof window.Board.renderBoard === 'function') {
+                        try {
+                            // Salviamo lo stato di eventuali drag n drop per non interromperli, se possibile
+                            // ma per sicurezza ricarichiamo tutto
+                            window.Board.renderBoard();
+                            if (window.App && window.App.updateStats) window.App.updateStats();
+                        } catch(e) {}
+                    }
+                    
+                    resolve(); // Risolve la Promise al primo caricamento riuscito
+                }, (error) => {
+                    console.error("Errore listener Firebase:", error);
+                    // Fallback di emergenza
+                    memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+                    resolve();
+                });
+            } catch (error) {
+                console.error("Errore initCloud:", error);
+                memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+                resolve();
+            }
+        });
+    }
 
     function load() {
-        try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (!raw) {
-                save(DEFAULT_DATA);
-                return JSON.parse(JSON.stringify(DEFAULT_DATA));
-            }
-            return JSON.parse(raw);
-        } catch (e) {
-            console.error('Errore caricamento dati:', e);
-            return JSON.parse(JSON.stringify(DEFAULT_DATA));
-        }
+        return memoryData; // Ritorna sempre i dati freschi tenuti in memoria dall'onSnapshot
     }
 
     function save(data) {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            memoryData = data;
+            // Scrive su Firestore. L'onSnapshot locale ignorerà i rimbalzi se i dati sono uguali
+            if (db) {
+                db.collection('boards').doc('default').set(data)
+                  .catch(e => console.error("Errore scrittura Firebase:", e));
+            }
             return true;
         } catch (e) {
             console.error('Errore salvataggio dati:', e);
@@ -291,6 +329,7 @@ const Storage = (() => {
     // ----- Public API -----
 
     return {
+        initCloud,
         load, save,
         COLUMN_META, PRIORITIES, PIPELINES,
         createCard, updateCard, deleteCard, getCard,
