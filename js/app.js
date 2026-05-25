@@ -1,5 +1,5 @@
 // ============================================================
-// BioTracker — app.js
+// BioTracker - app.js
 // Entry point, inizializzazione, utilities globali
 // ============================================================
 
@@ -8,7 +8,7 @@ const App = (() => {
 
     async function init() {
         console.log('⏳ Verifica Autenticazione in corso...');
-        
+
         const loginOverlay = document.getElementById('login-overlay');
         const btnLogin = document.getElementById('btn-login-google');
 
@@ -16,13 +16,12 @@ const App = (() => {
             btnLogin.addEventListener('click', () => {
                 const provider = new firebase.auth.GoogleAuthProvider();
                 firebase.auth().signInWithPopup(provider).catch(err => {
-                    console.error("Errore login:", err);
-                    showToast("Errore durante il login: " + err.message, 'error');
+                    console.error('Errore login:', err);
+                    showToast('Errore durante il login: ' + err.message, 'error');
                 });
             });
         }
 
-        // Ascolto stato utente da Firebase Auth
         firebase.auth().onAuthStateChanged(async (user) => {
             if (user) {
                 console.log('👤 Utente loggato:', user.email);
@@ -31,23 +30,22 @@ const App = (() => {
             } else {
                 console.log('🔒 Utente non loggato. Mostro schermata di login.');
                 if (loginOverlay) loginOverlay.style.display = 'flex';
-                // Volendo potremmo nascondere la board o fare un reload, 
-                // ma in questo caso l'overlay a schermo intero blocca l'UI dietro di esso.
             }
         });
     }
 
     async function startApp() {
-        if (appStarted) return; // Evita loop o doppie inizializzazioni ai refresh
+        if (appStarted) return;
         appStarted = true;
 
         try {
             console.log('⏳ Connessione al database in corso...');
-            
-            // Aspettiamo che Firebase scarichi la lavagna personale dell'utente
             await Storage.initCloud();
-        } catch(e) {
-            console.error("Errore di connessione a Firebase:", e);
+        } catch (e) {
+            appStarted = false;
+            console.error('Errore di connessione a Firebase:', e);
+            showToast('Firebase non disponibile: app bloccata per proteggere i dati.', 'error');
+            return;
         }
 
         Board.init();
@@ -57,7 +55,6 @@ const App = (() => {
         setupKeyboardShortcuts();
         registerServiceWorker();
 
-        // Tooltip
         console.log('%c🧬 BioTracker Sincronizzato & Attivo', 'color: #3fb950; font-size: 14px; font-weight: bold;');
     }
 
@@ -74,13 +71,42 @@ const App = (() => {
         }
     }
 
+    async function runExport() {
+        try {
+            await Storage.exportJSON();
+            showToast('Backup JSON esportato!', 'success');
+        } catch (err) {
+            console.error('Errore export:', err);
+            showToast('Errore export: ' + err.message, 'error');
+        }
+    }
+
+    async function runCloudBackup(button = null) {
+        if (button) button.disabled = true;
+        try {
+            const result = await Storage.createBackup('manual');
+            if (result.cloudPath) {
+                showToast('Backup cloud creato!', 'success');
+            } else {
+                showToast('Backup locale creato. Cloud non disponibile.', 'warning');
+            }
+        } catch (err) {
+            console.error('Errore backup:', err);
+            showToast('Errore backup: ' + err.message, 'error');
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
     function setupImportExport() {
         const exportBtn = document.getElementById('btn-export');
         if (exportBtn) {
-            exportBtn.addEventListener('click', () => {
-                Storage.exportJSON();
-                showToast('Backup esportato!', 'success');
-            });
+            exportBtn.addEventListener('click', runExport);
+        }
+
+        const cloudBackupBtn = document.getElementById('btn-cloud-backup');
+        if (cloudBackupBtn) {
+            cloudBackupBtn.addEventListener('click', () => runCloudBackup(cloudBackupBtn));
         }
 
         const importBtn = document.getElementById('btn-import');
@@ -97,6 +123,7 @@ const App = (() => {
                 if (!file) return;
 
                 try {
+                    await Storage.createBackup('before-import');
                     await Storage.importJSON(file);
                     Board.renderBoard();
                     Board.refreshAllColumns();
@@ -112,7 +139,6 @@ const App = (() => {
 
     function setupKeyboardShortcuts() {
         document.addEventListener('keydown', (e) => {
-            // Esc to close modal or archive
             if (e.key === 'Escape') {
                 const modal = document.getElementById('card-modal');
                 if (modal && modal.style.display === 'block') {
@@ -122,18 +148,15 @@ const App = (() => {
                 Archive.close();
             }
 
-            // Ctrl+K or Cmd+K to focus search
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
                 e.preventDefault();
                 const searchInput = document.getElementById('global-search');
                 if (searchInput) searchInput.focus();
             }
 
-            // Ctrl+E to export
             if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
                 e.preventDefault();
-                Storage.exportJSON();
-                showToast('Backup esportato!', 'success');
+                runExport();
             }
         });
     }
@@ -150,11 +173,8 @@ const App = (() => {
         `;
 
         container.appendChild(toast);
-
-        // Animate in
         requestAnimationFrame(() => toast.classList.add('show'));
 
-        // Auto remove
         setTimeout(() => {
             toast.classList.remove('show');
             setTimeout(() => toast.remove(), 300);

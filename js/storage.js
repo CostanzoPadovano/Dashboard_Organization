@@ -1,25 +1,30 @@
 // ============================================================
-// BioTracker — storage.js
-// Persistenza dati in localStorage + Import/Export JSON
+// BioTracker - storage.js
+// Persistenza dati in Firestore + backup locale/cloud + Import/Export JSON
 // ============================================================
 
 const Storage = (() => {
     const STORAGE_KEY = 'biotracker_data';
+    const BACKUP_INDEX_KEY = 'biotracker_backup_index';
+    const LEGACY_BOARD_ID = 'default';
+    const AUTO_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
-    const DEFAULT_DATA = {
-        projects: [{
-            id: 'default',
-            name: 'BioTracker',
-            description: 'Gestione analisi bioinformatiche',
-            createdAt: new Date().toISOString(),
-            columns: ['backlog', 'in_progress', 'review', 'done']
-        }],
-        cards: [],
-        settings: {
-            theme: 'dark',
-            lastExport: null
-        }
-    };
+    function createDefaultData() {
+        return {
+            projects: [{
+                id: 'default',
+                name: 'BioTracker',
+                description: 'Gestione analisi bioinformatiche',
+                createdAt: new Date().toISOString(),
+                columns: ['backlog', 'in_progress', 'review', 'done']
+            }],
+            cards: [],
+            settings: {
+                theme: 'dark',
+                lastExport: null
+            }
+        };
+    }
 
     const COLUMN_META = {
         backlog: { name: '📋 Backlog', color: '#8b949e' },
@@ -42,79 +47,425 @@ const Storage = (() => {
         'Gene Expression', 'Pathway Analysis', 'Altro'
     ];
 
-    // Variabile in memoria tenuta sempre sincronizzata con Firestore
     let memoryData = null;
+    let lastCloudData = null;
+    let cloudReady = false;
+    let userDocRef = null;
+    let unsubscribeCloud = null;
+    let saveQueue = Promise.resolve();
+    let lastAutoBackupAt = 0;
+    let initialBackupCreated = false;
 
-    function initCloud() {
-        return new Promise((resolve, reject) => {
-            try {
-                const user = firebase.auth().currentUser;
-                if (!user) {
-                    console.error("Blocco Storage init() perché non risulta alcun utente autenticato.");
-                    reject(new Error("Nessun utente loggato"));
-                    return;
-                }
-                
-                // Riferimento al documento personale della collezione "boards" (PRIVATO per questo user)
-                const docRef = db.collection('boards').doc(user.uid);
-                
-                // Listener real-time: scatta al primo caricamento e ad ogni modifica nel cloud
-                docRef.onSnapshot((doc) => {
-                    if (doc.exists) {
-                        memoryData = doc.data();
-                    } else {
-                        // Se non esiste nel cloud, lo creiamo col default
-                        memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
-                        docRef.set(memoryData).catch(console.error);
-                    }
-                    
-                    // Se l'app è già inizializzata e riceviamo un aggiornamento (es. da un altro dispositivo)
-                    // forziamo il re-render della UI per mostrare i dati aggiornati in tempo reale!
-                    if (window.Board && typeof window.Board.renderBoard === 'function') {
-                        try {
-                            // Salviamo lo stato di eventuali drag n drop per non interromperli, se possibile
-                            // ma per sicurezza ricarichiamo tutto
-                            window.Board.renderBoard();
-                            if (window.App && window.App.updateStats) window.App.updateStats();
-                        } catch(e) {}
-                    }
-                    
-                    resolve(); // Risolve la Promise al primo caricamento riuscito
-                }, (error) => {
-                    console.error("Errore listener Firebase:", error);
-                    // Fallback di emergenza
-                    memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
-                    resolve();
-                });
-            } catch (error) {
-                console.error("Errore initCloud:", error);
-                memoryData = JSON.parse(JSON.stringify(DEFAULT_DATA));
-                resolve();
+    function clone(data) {
+        return JSON.parse(JSON.stringify(data));
+    }
+
+    function isValidData(data) {
+        return !!data &&
+            Array.isArray(data.projects) &&
+            Array.isArray(data.cards) &&
+            data.settings &&
+            typeof data.settings === 'object';
+    }
+
+    function normalizeData(data) {
+        const defaults = createDefaultData();
+        const normalized = clone(data);
+        normalized.projects = Array.isArray(normalized.projects) && normalized.projects.length
+            ? normalized.projects
+            : defaults.projects;
+        normalized.cards = Array.isArray(normalized.cards) ? normalized.cards : [];
+        normalized.settings = normalized.settings && typeof normalized.settings === 'object'
+            ? { ...defaults.settings, ...normalized.settings }
+            : defaults.settings;
+        return normalized;
+    }
+
+    function countCards(data) {
+        return isValidData(data) ? data.cards.length : 0;
+    }
+
+    function hasCards(data) {
+        return countCards(data) > 0;
+    }
+
+    function timestampId() {
+        return new Date().toISOString().replace(/[:.]/g, '-');
+    }
+
+    function getAppApi() {
+        try {
+            if (typeof App !== 'undefined') return App;
+        } catch (e) {}
+        return window.App;
+    }
+
+    function getBoardApi() {
+        try {
+            if (typeof Board !== 'undefined') return Board;
+        } catch (e) {}
+        return window.Board;
+    }
+
+    function notify(message, type = 'info') {
+        const appApi = getAppApi();
+        if (appApi && typeof appApi.showToast === 'function') {
+            appApi.showToast(message, type);
+        }
+    }
+
+    function persistLocalMirror(data) {
+        if (!isValidData(data)) return false;
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            return true;
+        } catch (error) {
+            console.warn('Backup locale non salvato:', error);
+            return false;
+        }
+    }
+
+    function readLocalData(key = STORAGE_KEY) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return isValidData(parsed) ? normalizeData(parsed) : null;
+        } catch (error) {
+            console.warn('Backup locale non leggibile:', error);
+            return null;
+        }
+    }
+
+    function readLatestLocalBackupWithCards() {
+        try {
+            const index = JSON.parse(localStorage.getItem(BACKUP_INDEX_KEY) || '[]');
+            for (const entry of index) {
+                const backup = readLocalData(entry.key);
+                if (backup && hasCards(backup)) return backup;
             }
+        } catch (error) {
+            console.warn('Indice backup locale non leggibile:', error);
+        }
+        return null;
+    }
+
+    function writeLocalBackup(sourceData, reason = 'manual') {
+        if (!isValidData(sourceData)) return null;
+
+        try {
+            const now = new Date().toISOString();
+            const key = `biotracker_backup_${timestampId()}_${Math.random().toString(36).slice(2, 8)}`;
+            const backup = normalizeData(sourceData);
+            backup.settings = {
+                ...backup.settings,
+                backupCreatedAt: now,
+                backupReason: reason,
+                backupCardCount: countCards(sourceData)
+            };
+
+            localStorage.setItem(key, JSON.stringify(backup));
+
+            const index = JSON.parse(localStorage.getItem(BACKUP_INDEX_KEY) || '[]');
+            index.unshift({
+                key,
+                createdAt: now,
+                reason,
+                cardCount: countCards(sourceData)
+            });
+
+            localStorage.setItem(BACKUP_INDEX_KEY, JSON.stringify(index.slice(0, 25)));
+            return key;
+        } catch (error) {
+            console.warn('Creazione backup locale fallita:', error);
+            return null;
+        }
+    }
+
+    async function writeCloudBackup(sourceData, reason = 'manual', sourcePath = null) {
+        const user = firebase.auth().currentUser;
+        if (!db || !user || !isValidData(sourceData)) return null;
+
+        const id = `${timestampId()}_${Math.random().toString(36).slice(2, 8)}`;
+        const now = new Date().toISOString();
+        const payload = {
+            createdAt: now,
+            reason,
+            source: sourcePath || (userDocRef ? userDocRef.path : `boards/${user.uid}`),
+            cardCount: countCards(sourceData),
+            data: normalizeData(sourceData)
+        };
+
+        const backupRefs = [
+            db.collection('boards').doc(user.uid).collection('backups').doc(id),
+            db.collection('board_backups').doc(user.uid).collection('snapshots').doc(id)
+        ];
+
+        let lastError = null;
+        for (const backupRef of backupRefs) {
+            try {
+                await backupRef.set(payload);
+                return backupRef.path;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw lastError || new Error('Backup cloud non riuscito');
+    }
+
+    async function createBackup(reason = 'manual') {
+        if (!cloudReady || !memoryData) {
+            throw new Error('Dati cloud non ancora caricati: backup annullato.');
+        }
+
+        const data = normalizeData(memoryData);
+        const localKey = writeLocalBackup(data, reason);
+        let cloudPath = null;
+        let cloudError = null;
+
+        try {
+            cloudPath = await writeCloudBackup(data, reason);
+        } catch (error) {
+            cloudError = error;
+            console.warn('Backup cloud fallito, backup locale disponibile:', error);
+        }
+
+        if (!localKey && !cloudPath) {
+            throw cloudError || new Error('Backup non creato.');
+        }
+
+        return { localKey, cloudPath, cloudError };
+    }
+
+    async function createStartupBackupIfNeeded() {
+        if (initialBackupCreated || !hasCards(memoryData)) return;
+        initialBackupCreated = true;
+        writeLocalBackup(memoryData, 'startup');
+        try {
+            await writeCloudBackup(memoryData, 'startup');
+        } catch (error) {
+            console.warn('Backup cloud iniziale non creato:', error);
+        }
+    }
+
+    async function getLegacyFirestoreData() {
+        try {
+            const legacySnap = await db.collection('boards').doc(LEGACY_BOARD_ID).get();
+            if (!legacySnap.exists) return null;
+            const legacyData = legacySnap.data();
+            return isValidData(legacyData) && hasCards(legacyData)
+                ? normalizeData(legacyData)
+                : null;
+        } catch (error) {
+            console.warn('Lettura documento legacy boards/default non riuscita:', error);
+            return null;
+        }
+    }
+
+    async function recoverIfEmpty(currentData, docRef) {
+        if (hasCards(currentData)) return currentData;
+
+        const recoveries = [
+            { source: 'boards/default', data: await getLegacyFirestoreData() },
+            { source: 'localStorage:biotracker_data', data: readLocalData(STORAGE_KEY) },
+            { source: 'localStorage:biotracker_backup_index', data: readLatestLocalBackupWithCards() }
+        ];
+
+        const recovery = recoveries.find(item => item.data && hasCards(item.data));
+        if (!recovery) return currentData;
+
+        const recovered = normalizeData(recovery.data);
+        recovered.settings = {
+            ...recovered.settings,
+            recoveredFrom: recovery.source,
+            recoveredAt: new Date().toISOString()
+        };
+
+        writeLocalBackup(currentData, `before-recovery-from-${recovery.source}`);
+        await docRef.set(recovered);
+        notify(`Dati recuperati da ${recovery.source}`, 'success');
+        return recovered;
+    }
+
+    async function loadInitialData(docRef) {
+        const snapshot = await docRef.get();
+        let initialData;
+
+        if (snapshot.exists) {
+            const cloudData = snapshot.data();
+            if (!isValidData(cloudData)) {
+                throw new Error('Documento Firestore non valido: salvataggio bloccato.');
+            }
+            initialData = normalizeData(cloudData);
+        } else {
+            const legacyData = await getLegacyFirestoreData();
+            initialData = legacyData || readLocalData(STORAGE_KEY) || readLatestLocalBackupWithCards() || createDefaultData();
+            initialData = normalizeData(initialData);
+            if (legacyData && hasCards(legacyData)) {
+                initialData.settings = {
+                    ...initialData.settings,
+                    migratedFrom: 'boards/default',
+                    migratedAt: new Date().toISOString()
+                };
+            }
+            await docRef.set(initialData);
+        }
+
+        return recoverIfEmpty(initialData, docRef);
+    }
+
+    function rerenderApp() {
+        const boardApi = getBoardApi();
+        const appApi = getAppApi();
+
+        if (boardApi && typeof boardApi.renderBoard === 'function') {
+            try {
+                boardApi.renderBoard();
+                if (appApi && typeof appApi.updateStats === 'function') appApi.updateStats();
+            } catch (error) {
+                console.warn('Re-render dopo sync cloud non riuscito:', error);
+            }
+        }
+    }
+
+    async function initCloud() {
+        const user = firebase.auth().currentUser;
+        if (!user) {
+            throw new Error('Nessun utente loggato');
+        }
+
+        cloudReady = false;
+        userDocRef = db.collection('boards').doc(user.uid);
+
+        if (unsubscribeCloud) {
+            unsubscribeCloud();
+            unsubscribeCloud = null;
+        }
+
+        const initialData = await loadInitialData(userDocRef);
+        memoryData = normalizeData(initialData);
+        lastCloudData = clone(memoryData);
+        cloudReady = true;
+        persistLocalMirror(memoryData);
+        createStartupBackupIfNeeded();
+
+        unsubscribeCloud = userDocRef.onSnapshot((doc) => {
+            if (!doc.exists) {
+                console.warn('Documento board eliminato dal cloud. Mantengo la copia in memoria e blocco i salvataggi.');
+                cloudReady = false;
+                notify('Board cloud mancante: salvataggi bloccati per sicurezza.', 'error');
+                return;
+            }
+
+            const incoming = doc.data();
+            if (!isValidData(incoming)) {
+                console.warn('Documento board non valido ricevuto dal cloud. Aggiornamento ignorato.');
+                return;
+            }
+
+            memoryData = normalizeData(incoming);
+            lastCloudData = clone(memoryData);
+            persistLocalMirror(memoryData);
+            rerenderApp();
+        }, (error) => {
+            console.error('Errore listener Firebase:', error);
+            cloudReady = false;
+            notify('Connessione Firebase persa: salvataggi bloccati per sicurezza.', 'error');
         });
     }
 
     function load() {
-        if (!memoryData || !memoryData.cards) {
-             console.warn("Storage.load() chiamato prima che i dati di Firebase fossero pronti. Uso fallback.");
-             return JSON.parse(JSON.stringify(DEFAULT_DATA));
+        if (!cloudReady || !memoryData || !isValidData(memoryData)) {
+            console.warn('Storage.load() chiamato prima del caricamento cloud. Uso solo fallback temporaneo.');
+            return createDefaultData();
         }
-        return memoryData; // Ritorna sempre i dati freschi tenuti in memoria dall'onSnapshot
+        return memoryData;
     }
 
-    function save(data) {
-        try {
-            memoryData = data;
-            const user = firebase.auth().currentUser;
+    function shouldBlockSave(existingData, nextData, reason) {
+        if (!existingData || !isValidData(existingData)) return false;
 
-            // Scrive su Firestore solo se siamo loggati
-            if (db && user) {
-                db.collection('boards').doc(user.uid).set(data)
-                  .catch(e => console.error("Errore scrittura Firebase Auth:", e));
+        const existingCount = countCards(existingData);
+        const nextCount = countCards(nextData);
+        const intentionalEmptyReasons = ['delete-card'];
+
+        return existingCount > 0 &&
+            nextCount === 0 &&
+            !intentionalEmptyReasons.includes(reason);
+    }
+
+    async function backupBeforeWrite(existingData, nextData, reason) {
+        if (!existingData || !hasCards(existingData)) return;
+
+        const existingCount = countCards(existingData);
+        const nextCount = countCards(nextData);
+        const riskyReasons = ['delete-card', 'import-json'];
+        const risky = nextCount < existingCount || riskyReasons.includes(reason);
+        const backupDue = Date.now() - lastAutoBackupAt > AUTO_BACKUP_INTERVAL_MS;
+
+        if (!risky && !backupDue) return;
+
+        writeLocalBackup(existingData, `before-${reason}`);
+        lastAutoBackupAt = Date.now();
+
+        try {
+            await writeCloudBackup(existingData, `before-${reason}`);
+        } catch (error) {
+            console.warn('Backup cloud prima del salvataggio non creato:', error);
+        }
+    }
+
+    function save(data, reason = 'save') {
+        try {
+            if (!cloudReady || !userDocRef) {
+                notify('Salvataggio bloccato: dati cloud non ancora caricati.', 'error');
+                return false;
             }
+
+            if (!isValidData(data)) {
+                notify('Salvataggio bloccato: struttura dati non valida.', 'error');
+                return false;
+            }
+
+            const nextData = normalizeData(data);
+            nextData.settings = {
+                ...nextData.settings,
+                lastSaved: new Date().toISOString()
+            };
+
+            if (shouldBlockSave(lastCloudData, nextData, reason)) {
+                writeLocalBackup(lastCloudData, `blocked-${reason}`);
+                notify('Salvataggio vuoto bloccato: esisteva una board con card.', 'error');
+                return false;
+            }
+
+            memoryData = nextData;
+            persistLocalMirror(nextData);
+
+            saveQueue = saveQueue.then(async () => {
+                const snapshot = await userDocRef.get();
+                const existingData = snapshot.exists && isValidData(snapshot.data())
+                    ? normalizeData(snapshot.data())
+                    : lastCloudData;
+
+                if (shouldBlockSave(existingData, nextData, reason)) {
+                    writeLocalBackup(existingData, `blocked-${reason}`);
+                    throw new Error('Salvataggio vuoto bloccato: esisteva una board con card.');
+                }
+
+                await backupBeforeWrite(existingData, nextData, reason);
+                await userDocRef.set(nextData);
+                lastCloudData = clone(nextData);
+            }).catch((error) => {
+                console.error('Errore salvataggio dati:', error);
+                notify(error.message || 'Errore durante il salvataggio cloud.', 'error');
+            });
+
             return true;
-        } catch (e) {
-            console.error('Errore salvataggio dati:', e);
+        } catch (error) {
+            console.error('Errore salvataggio dati:', error);
+            notify('Errore durante il salvataggio.', 'error');
             return false;
         }
     }
@@ -148,7 +499,7 @@ const Storage = (() => {
             order: cardsInColumn.length
         };
         data.cards.push(card);
-        save(data);
+        save(data, 'create-card');
         return card;
     }
 
@@ -157,14 +508,14 @@ const Storage = (() => {
         const idx = data.cards.findIndex(c => c.id === cardId);
         if (idx === -1) return null;
         Object.assign(data.cards[idx], updates, { updatedAt: new Date().toISOString() });
-        save(data);
+        save(data, 'update-card');
         return data.cards[idx];
     }
 
     function deleteCard(cardId) {
         const data = load();
         data.cards = data.cards.filter(c => c.id !== cardId);
-        save(data);
+        save(data, 'delete-card');
     }
 
     function getCard(cardId) {
@@ -193,7 +544,6 @@ const Storage = (() => {
         card.columnId = targetColumnId;
         card.updatedAt = new Date().toISOString();
 
-        // Reorder cards in target column
         const targetCards = data.cards
             .filter(c => c.columnId === targetColumnId && !c.archived && c.id !== cardId)
             .sort((a, b) => a.order - b.order);
@@ -201,7 +551,6 @@ const Storage = (() => {
         targetCards.splice(targetOrder, 0, card);
         targetCards.forEach((c, i) => c.order = i);
 
-        // Reorder old column if moved between columns
         if (oldColumnId !== targetColumnId) {
             const oldCards = data.cards
                 .filter(c => c.columnId === oldColumnId && !c.archived)
@@ -209,7 +558,7 @@ const Storage = (() => {
             oldCards.forEach((c, i) => c.order = i);
         }
 
-        save(data);
+        save(data, 'move-card');
     }
 
     // ----- Archive -----
@@ -226,14 +575,13 @@ const Storage = (() => {
         const card = data.cards.find(c => c.id === cardId);
         if (!card) return null;
 
-        // Put restored card at the end of backlog
         const backlogCards = data.cards.filter(c => c.columnId === 'backlog' && !c.archived);
         card.archived = false;
         card.archivedAt = null;
         card.columnId = 'backlog';
         card.order = backlogCards.length;
         card.updatedAt = new Date().toISOString();
-        save(data);
+        save(data, 'restore-card');
         return card;
     }
 
@@ -246,10 +594,16 @@ const Storage = (() => {
 
     // ----- Import/Export -----
 
-    function exportJSON() {
-        const data = load();
+    async function exportJSON() {
+        const data = normalizeData(load());
         data.settings.lastExport = new Date().toISOString();
-        save(data);
+
+        try {
+            await createBackup('export-json');
+        } catch (error) {
+            console.warn('Backup automatico durante export non creato:', error);
+        }
+
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -271,7 +625,7 @@ const Storage = (() => {
                         reject(new Error('File non valido: mancano campi obbligatori'));
                         return;
                     }
-                    save(imported);
+                    save(normalizeData(imported), 'import-json');
                     resolve(imported);
                 } catch (err) {
                     reject(new Error('Errore parsing JSON: ' + err.message));
@@ -344,6 +698,7 @@ const Storage = (() => {
     return {
         initCloud,
         load, save,
+        createBackup,
         COLUMN_META, PRIORITIES, PIPELINES,
         createCard, updateCard, deleteCard, getCard,
         getCards, getAllActiveCards, moveCard,
