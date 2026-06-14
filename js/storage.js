@@ -68,13 +68,64 @@ const Storage = (() => {
             typeof data.settings === 'object';
     }
 
+    function getLocalDateKey() {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    function normalizeMicrotasks(card) {
+        const list = Array.isArray(card.microtasks) ? card.microtasks : [];
+        const fallbackDate = getLocalDateKey();
+        return list
+            .map((task, index) => ({
+                id: task.id || `microtask_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                title: typeof task.title === 'string' ? task.title : '',
+                completed: !!task.completed,
+                date: typeof task.date === 'string' && task.date ? task.date : fallbackDate,
+                order: Number.isFinite(task.order) ? task.order : index,
+                createdAt: task.createdAt || card.createdAt || new Date().toISOString(),
+                updatedAt: task.updatedAt || card.updatedAt || new Date().toISOString()
+            }))
+            .filter(task => task.title.trim() || task.completed)
+            .sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+    }
+
+    function normalizeCard(card) {
+        const normalized = {
+            ...card,
+            projectId: card.projectId || 'default',
+            columnId: card.columnId || 'backlog',
+            title: typeof card.title === 'string' ? card.title : '',
+            description: typeof card.description === 'string' ? card.description : '',
+            priority: PRIORITIES[card.priority] ? card.priority : 'medium',
+            pipeline: typeof card.pipeline === 'string' ? card.pipeline : '',
+            organism: typeof card.organism === 'string' ? card.organism : '',
+            dataset: typeof card.dataset === 'string' ? card.dataset : '',
+            tags: Array.isArray(card.tags) ? card.tags : [],
+            notes: typeof card.notes === 'string' ? card.notes : '',
+            createdAt: card.createdAt || new Date().toISOString(),
+            updatedAt: card.updatedAt || card.createdAt || new Date().toISOString(),
+            archived: !!card.archived,
+            archivedAt: card.archivedAt || null,
+            order: Number.isFinite(card.order) ? card.order : 0
+        };
+
+        normalized.microtasks = normalizeMicrotasks(normalized);
+        return normalized;
+    }
+
     function normalizeData(data) {
         const defaults = createDefaultData();
         const normalized = clone(data);
         normalized.projects = Array.isArray(normalized.projects) && normalized.projects.length
             ? normalized.projects
             : defaults.projects;
-        normalized.cards = Array.isArray(normalized.cards) ? normalized.cards : [];
+        normalized.cards = Array.isArray(normalized.cards)
+            ? normalized.cards.map(normalizeCard)
+            : [];
         normalized.settings = normalized.settings && typeof normalized.settings === 'object'
             ? { ...defaults.settings, ...normalized.settings }
             : defaults.settings;
@@ -492,6 +543,7 @@ const Storage = (() => {
             dataset,
             tags: Array.isArray(tags) ? tags : [],
             notes,
+            microtasks: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             archived: false,
@@ -652,7 +704,10 @@ const Storage = (() => {
                 c.organism.toLowerCase().includes(q) ||
                 c.dataset.toLowerCase().includes(q) ||
                 c.notes.toLowerCase().includes(q) ||
-                c.tags.some(t => t.toLowerCase().includes(q))
+                c.tags.some(t => t.toLowerCase().includes(q)) ||
+                (Array.isArray(c.microtasks) && c.microtasks.some(task =>
+                    (task.title || '').toLowerCase().includes(q)
+                ))
             );
         });
     }

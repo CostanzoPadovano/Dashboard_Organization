@@ -43,7 +43,10 @@ const Archive = (() => {
                 c.organism.toLowerCase().includes(q) ||
                 c.dataset.toLowerCase().includes(q) ||
                 c.notes.toLowerCase().includes(q) ||
-                c.tags.some(t => t.toLowerCase().includes(q))
+                c.tags.some(t => t.toLowerCase().includes(q)) ||
+                (Array.isArray(c.microtasks) && c.microtasks.some(task =>
+                    (task.title || '').toLowerCase().includes(q)
+                ))
             );
         }
 

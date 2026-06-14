@@ -62,7 +62,10 @@ const Search = (() => {
                     card.organism.toLowerCase().includes(q) ||
                     card.dataset.toLowerCase().includes(q) ||
                     card.notes.toLowerCase().includes(q) ||
-                    card.tags.some(t => t.toLowerCase().includes(q))
+                    card.tags.some(t => t.toLowerCase().includes(q)) ||
+                    (Array.isArray(card.microtasks) && card.microtasks.some(task =>
+                        (task.title || '').toLowerCase().includes(q)
+                    ))
                 );
             }
 
